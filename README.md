@@ -1,3 +1,13 @@
+---
+title: BGP Troubleshooting RAG Chatbot
+emoji: 🌐
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_file: app.py
+pinned: false
+---
+
 # BGP Troubleshooting RAG Chatbot — Cloud Deployment
 
 Domain-specific RAG chatbot for Cisco BGP troubleshooting, deployed on HuggingFace Spaces with Groq cloud LLM inference. No local setup required — visit the URL and start asking questions.
