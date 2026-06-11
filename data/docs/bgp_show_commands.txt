@@ -1,0 +1,178 @@
+BGP SHOW COMMANDS REFERENCE — CISCO IOS / IOS-XE
+==================================================
+
+SUMMARY AND OVERVIEW COMMANDS
+-------------------------------
+
+show ip bgp summary
+  Purpose: Quick overview of all BGP neighbors, their state, prefixes received
+  Output fields:
+    Neighbor    — Peer IP address
+    V           — BGP version (always 4)
+    AS          — Remote AS number
+    MsgRcvd     — Total messages received since session start
+    MsgSent     — Total messages sent
+    TblVer      — Table version (increments with each routing change)
+    InQ/OutQ    — Messages queued (should be 0; if non-zero, session overloaded)
+    Up/Down     — Session uptime (or time since last state change if down)
+    State/PfxRcd — Session state or prefix count if ESTABLISHED
+
+  Key interpretation:
+    State = Idle/Active/Connect → session NOT established
+    State = numeric (e.g., 145032) → ESTABLISHED, showing prefix count
+    State = 0 → ESTABLISHED but no prefixes received
+
+show ip bgp
+  Purpose: Full BGP routing table
+  Output columns:
+    Status codes: s=suppressed, d=damped, h=history, *=valid, >=best, i=internal
+    Origin codes: i=IGP, e=EGP, ?=incomplete
+  Common filters:
+    show ip bgp <prefix>             — specific prefix detail
+    show ip bgp regexp <regex>       — filter by AS_PATH
+    show ip bgp community <value>    — filter by community
+    show ip bgp prefix-list <name>   — filter by prefix-list
+
+show bgp neighbors <ip>  (or show ip bgp neighbors <ip>)
+  Purpose: Detailed per-neighbor information
+  Key fields to check:
+    BGP state = <state>              — current FSM state
+    Hold time is <n>, keepalive is <n> — negotiated timers
+    Configured hold time is <n>      — locally configured value
+    BGP version = 4                  — should always be 4
+    Neighbor capabilities:           — supported features
+    Message statistics:              — counts by message type
+    Prefix activity:                 — prefixes accepted/denied
+    Local host: <ip>, Local port: <port>
+    Foreign host: <ip>, Foreign port: <port>
+    Connections established <n>; dropped <n>
+    Last reset <time> ago, due to: <reason>   ← CRITICAL FOR TROUBLESHOOTING
+
+PREFIX AND ROUTE COMMANDS
+--------------------------
+
+show ip bgp neighbors <ip> advertised-routes
+  Purpose: Show routes being sent TO this neighbor
+  Use case: Verify outbound policy is working correctly
+  Note: Does not require soft-reconfiguration inbound
+
+show ip bgp neighbors <ip> received-routes
+  Purpose: Show ALL routes received FROM neighbor (before inbound policy)
+  Prerequisite: neighbor <ip> soft-reconfiguration inbound must be configured
+  Use case: Verify what peer is actually sending before filters
+
+show ip bgp neighbors <ip> routes
+  Purpose: Show routes accepted after inbound policy
+  Use case: Verify filtered routes are being applied
+
+show ip bgp <prefix>
+  Purpose: Detailed path information for a specific prefix
+  Shows: All paths, best path selection reason, full attributes
+  Example output interpretation:
+    BGP routing table entry for 10.0.0.0/8, version 45
+    Paths: (2 available, best #1, table Default-IP-Routing-Table)
+    Advertised to update-groups: 1
+    Path #1: <best>
+      10.1.1.1 from 10.1.1.1 (192.168.1.1)
+        Origin IGP, metric 0, localpref 100, valid, external, best
+        Community: 65000:100
+
+show ip bgp <prefix> longer-prefixes
+  Purpose: Show all more-specific routes within a prefix block
+  Use case: Check for more-specifics competing with aggregate
+
+POLICY AND FILTERING COMMANDS
+-------------------------------
+
+show route-map [name]
+  Purpose: Display route-map configuration and match/set statistics
+  Counter field: Policy routing matches — shows how many routes hit each clause
+
+show ip prefix-list [name]
+  Purpose: Display prefix-list and hit counters
+  Use case: Verify prefix-lists are matching expected routes
+
+show ip community-list [number|name]
+  Purpose: Display community-list configuration
+
+show bgp neighbors <ip> policy
+  Purpose: Show inbound and outbound policies applied to this neighbor
+  Requires: BGP policy accounting enabled, or IOS-XE enhanced policy view
+
+ATTRIBUTE MANIPULATION VERIFICATION
+-------------------------------------
+
+show ip bgp | include LOCAL_PREF
+  Purpose: Verify LOCAL_PREFERENCE values in table
+
+show ip bgp detail | include community
+  Purpose: Show community values on prefixes
+
+show ip bgp <prefix> detail
+  Purpose: Full attribute dump including:
+    - LOCAL_PREF, MED, WEIGHT, AS_PATH
+    - COMMUNITIES, ORIGINATOR_ID, CLUSTER_LIST
+    - NEXT_HOP and IGP metric to next-hop
+    - Path selection reason
+
+STATISTICS AND MONITORING
+--------------------------
+
+show bgp neighbors <ip> | include notifications
+  Purpose: Check for NOTIFICATION messages (errors sent/received)
+  Non-zero notifications indicate session resets with error codes
+
+show bgp neighbors <ip> | include drops
+  Purpose: Count session drops/resets
+
+show bgp summary | include Down
+  Purpose: Quick filter to see which peers are down
+
+show tcp brief
+  Purpose: Verify TCP session exists for BGP (port 179)
+  Look for: <peer-ip>.bgp ESTABLISHED
+
+show ip route bgp
+  Purpose: Show only BGP-installed routes in routing table
+  Use case: Verify BGP routes are being used for forwarding
+
+DEBUG COMMANDS (USE WITH CAUTION IN PRODUCTION)
+-------------------------------------------------
+
+debug ip bgp <neighbor-ip> events
+  Shows: Session state changes, timer events, connection attempts
+  Safe to use briefly in production
+
+debug ip bgp <neighbor-ip> updates
+  Shows: Every UPDATE message sent and received
+  WARNING: Very verbose if many prefixes; can impact router performance
+  Best practice: Use with specific neighbor IP, not "debug ip bgp *"
+
+debug ip bgp all
+  WARNING: NEVER use in production. Shows ALL BGP events for ALL peers.
+  Use only in lab environment.
+
+Undebug all: undebug all  (or: no debug all)
+
+USEFUL SHOW COMMAND SEQUENCES FOR COMMON SCENARIOS
+----------------------------------------------------
+
+Scenario: BGP session down, need to know why
+  1. show ip bgp summary                    — confirm state
+  2. show bgp neighbors <ip> | include state — current state
+  3. show bgp neighbors <ip> | include reset — last reset reason
+  4. ping <ip> source <source-ip>            — test reachability
+  5. show log | include BGP                  — check syslog history
+
+Scenario: Routes not appearing in BGP table
+  1. show ip bgp summary                    — confirm ESTABLISHED
+  2. show bgp neighbors <ip> received-routes — what did peer send?
+  3. show bgp neighbors <ip> routes          — what survived filtering?
+  4. show bgp neighbors <ip> policy          — what policy is applied?
+  5. show route-map <name>                   — check policy config
+
+Scenario: Suboptimal routing (wrong path selected)
+  1. show ip bgp <prefix>                   — see all paths
+  2. show ip bgp <prefix> detail             — see attribute comparison
+  3. show bgp neighbors <ip> advertised-routes — verify what you're sending
+  4. Check: weight, local-pref, AS-path, MED in order of preference

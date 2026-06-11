@@ -1,0 +1,258 @@
+BGP CONFIGURATION GUIDE — CISCO IOS / IOS-XE
+=============================================
+
+BASIC BGP CONFIGURATION
+------------------------
+
+Minimum configuration to start BGP process and establish a peer:
+
+router bgp <local-AS-number>
+ bgp router-id <x.x.x.x>              ! Best practice: always set manually
+ bgp log-neighbor-changes              ! Enable logging of state changes (CRITICAL)
+ !
+ ! eBGP peer (different AS)
+ neighbor <peer-ip> remote-as <peer-AS>
+ neighbor <peer-ip> description <text>
+ !
+ ! Advertise a network
+ network <prefix> mask <subnet-mask>
+
+Verify: show ip bgp summary
+        show bgp neighbors <peer-ip>
+
+
+iBGP CONFIGURATION (SAME AS)
+------------------------------
+
+Key principle: iBGP peers must be fully meshed OR use Route Reflectors / Confederations.
+iBGP does NOT loop prevention via split-horizon: routes learned from iBGP peer
+are not forwarded to another iBGP peer (prevents loops but requires full mesh).
+
+Full mesh iBGP (N routers = N*(N-1)/2 sessions — doesn't scale):
+
+router bgp 65001
+ neighbor 10.0.0.2 remote-as 65001      ! same AS = iBGP
+ neighbor 10.0.0.2 update-source Loopback0  ! use stable source IP
+ neighbor 10.0.0.2 next-hop-self        ! fix next-hop for iBGP
+ !
+ neighbor 10.0.0.3 remote-as 65001
+ neighbor 10.0.0.3 update-source Loopback0
+ neighbor 10.0.0.3 next-hop-self
+
+Important iBGP rules:
+  - Always use loopbacks for iBGP peering (more stable than physical IPs)
+  - Always configure: neighbor <ip> update-source Loopback0
+  - Always configure: neighbor <ip> next-hop-self (especially for eBGP-learned routes)
+  - Ensure loopback reachability via IGP (OSPF/EIGRP)
+
+
+ROUTE REFLECTOR CONFIGURATION
+-------------------------------
+
+Route Reflector eliminates full-mesh iBGP requirement.
+RR reflects iBGP routes to clients — clients only need session to RR.
+
+On Route Reflector:
+router bgp 65001
+ bgp cluster-id 1                      ! Required if multiple RRs in same cluster
+ !
+ neighbor 10.0.1.1 remote-as 65001
+ neighbor 10.0.1.1 route-reflector-client    ! Mark as RR client
+ !
+ neighbor 10.0.1.2 remote-as 65001
+ neighbor 10.0.1.2 route-reflector-client
+ !
+ neighbor 10.0.2.1 remote-as 65001     ! This peer is NOT an RR client
+ ! (peer-to-peer iBGP, e.g., another RR)
+
+On RR Client (standard iBGP config — client doesn't know it's a client):
+router bgp 65001
+ neighbor 10.0.0.1 remote-as 65001     ! Points to RR
+ neighbor 10.0.0.1 update-source Loopback0
+
+Verify: show ip bgp <prefix> — ORIGINATOR_ID and CLUSTER_LIST will be present
+        show bgp neighbors <ip> | include reflector
+
+
+PEER GROUPS (SCALING CONFIGURATION)
+--------------------------------------
+
+Peer groups reduce config duplication and improve performance.
+Peers in a group share policy — UPDATE generation done once for group.
+
+router bgp 65001
+ !
+ neighbor IBGP-PEERS peer-group
+ neighbor IBGP-PEERS remote-as 65001
+ neighbor IBGP-PEERS update-source Loopback0
+ neighbor IBGP-PEERS next-hop-self
+ neighbor IBGP-PEERS soft-reconfiguration inbound
+ !
+ neighbor 10.0.0.2 peer-group IBGP-PEERS
+ neighbor 10.0.0.3 peer-group IBGP-PEERS
+ neighbor 10.0.0.4 peer-group IBGP-PEERS
+
+Verify: show ip bgp peer-group
+
+
+BGP AUTHENTICATION (MD5)
+--------------------------
+
+Configure identical passwords on both sides:
+
+Router A:
+ neighbor 10.1.1.2 password Cisco123!
+
+Router B:
+ neighbor 10.1.1.1 password Cisco123!
+
+Notes:
+  - Password is case-sensitive
+  - No spaces allowed at beginning or end
+  - Hashed in show running-config (type 7 or encrypted)
+  - Session must be reset after adding authentication:
+    clear ip bgp 10.1.1.2
+
+Verify: show bgp neighbors 10.1.1.2 | include password
+        (shows "MD5 is configured" — never shows actual password)
+
+
+INBOUND/OUTBOUND ROUTE FILTERING
+----------------------------------
+
+Method 1: Prefix-list (recommended — most efficient)
+
+ip prefix-list ALLOW-ONLY-DEFAULT permit 0.0.0.0/0
+ip prefix-list ALLOW-ONLY-DEFAULT deny 0.0.0.0/0 le 32
+
+router bgp 65001
+ neighbor <ip> prefix-list ALLOW-ONLY-DEFAULT in
+
+Method 2: Route-map (most flexible)
+
+route-map SET-LOCAL-PREF permit 10
+ match ip address prefix-list CUSTOMER-ROUTES
+ set local-preference 200
+route-map SET-LOCAL-PREF permit 20
+
+router bgp 65001
+ neighbor <ip> route-map SET-LOCAL-PREF in
+
+Method 3: AS-path filter
+
+ip as-path access-list 1 permit ^65100_
+ip as-path access-list 1 deny .*
+
+router bgp 65001
+ neighbor <ip> filter-list 1 in
+
+
+BGP TIMER CONFIGURATION
+-------------------------
+
+Default timers (RFC 4271):
+  Keepalive: 60 seconds
+  Hold time: 180 seconds
+
+Modify timers (both sides should match for predictability):
+ timers bgp <keepalive> <holdtime>
+
+Examples:
+ timers bgp 10 30          ! Fast convergence (test/datacenter)
+ timers bgp 60 180         ! Default (most WAN deployments)
+ timers bgp 0 0            ! Disable hold timer (NOT recommended)
+
+Per-neighbor override:
+ neighbor <ip> timers <keepalive> <holdtime>
+
+Verify: show bgp neighbors <ip> | include Hold|Keepalive
+
+
+BGP GRACEFUL RESTART
+---------------------
+
+Allows BGP to maintain forwarding during a restart event (NSF/NSR).
+
+router bgp 65001
+ bgp graceful-restart
+ bgp graceful-restart restart-time 120    ! Default 120s
+ bgp graceful-restart stalepath-time 360  ! Default 360s
+
+Verify: show bgp neighbors <ip> | include graceful
+
+
+MAXIMUM PREFIX CONFIGURATION
+------------------------------
+
+Protects router from accepting too many routes (route leak protection):
+
+router bgp 65001
+ ! Tear down session if peer sends > 500000 prefixes
+ neighbor <ip> maximum-prefix 500000
+
+ ! Warn at 80% of limit, tear down at 100%
+ neighbor <ip> maximum-prefix 500000 80
+
+ ! Warning only — never tear down session
+ neighbor <ip> maximum-prefix 500000 warning-only
+
+Verify: show bgp neighbors <ip> | include prefix
+
+
+SOFT RECONFIGURATION
+---------------------
+
+Required to use "show ip bgp neighbors <ip> received-routes":
+
+router bgp 65001
+ neighbor <ip> soft-reconfiguration inbound
+
+Note: Stores a copy of all received routes before policy application.
+Uses additional memory. Consider carefully on high-prefix-count sessions.
+
+Alternatively, use Route Refresh (if supported by both peers):
+ clear ip bgp <ip> soft in    ! Requests peer to resend routes
+
+
+WEIGHT, LOCAL-PREFERENCE, MED CONFIGURATION
+---------------------------------------------
+
+WEIGHT (Cisco proprietary — not advertised to peers, local only):
+  route-map SET-WEIGHT permit 10
+   match ip address prefix-list PREFERRED-ROUTES
+   set weight 200
+  router bgp 65001
+   neighbor <ip> route-map SET-WEIGHT in
+
+LOCAL-PREFERENCE (advertised within AS, higher = preferred):
+  route-map SET-LP permit 10
+   set local-preference 150
+  router bgp 65001
+   neighbor <ip> route-map SET-LP in
+
+  Default local-pref: bgp default local-preference <value>  (default 100)
+
+MED (Multi-Exit Discriminator — advertised to external peers, lower = preferred):
+  route-map SET-MED permit 10
+   set metric 100
+  router bgp 65001
+   neighbor <ip> route-map SET-MED out
+
+AS-PATH PREPENDING (make path look longer to influence inbound traffic):
+  route-map PREPEND permit 10
+   set as-path prepend 65001 65001 65001   ! Prepend our ASN 3 times
+  router bgp 65001
+   neighbor <ip> route-map PREPEND out
+
+
+CONFEDERATIONS
+--------------
+
+Alternative to full-mesh iBGP for large AS. Splits AS into sub-ASs.
+Less common than Route Reflectors in modern networks.
+
+router bgp 65100              ! Sub-AS number
+ bgp confederation identifier 65001   ! Public-facing AS number
+ bgp confederation peers 65101 65102  ! Other sub-ASs in confederation
+ !
+ neighbor <ip> remote-as 65101       ! Peer in another sub-AS

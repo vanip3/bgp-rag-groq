@@ -1,0 +1,143 @@
+BGP NEIGHBOR STATE MACHINE — CISCO IOS REFERENCE GUIDE
+=======================================================
+
+BGP uses a finite state machine (FSM) with six states to manage neighbor relationships.
+Understanding each state is critical for troubleshooting peering issues.
+
+STATE 1: IDLE
+-------------
+Description:
+  The router is not attempting BGP connections. This is the initial state.
+
+Common causes of being stuck in IDLE:
+  - BGP process not started or neighbor statement missing
+  - Administrative shutdown: neighbor <ip> shutdown
+  - Route to neighbor unreachable (no IGP path)
+  - TCP port 179 blocked by ACL or firewall
+  - Incorrect neighbor IP address configured
+
+Verification commands:
+  show bgp neighbors <ip>
+  show ip bgp summary
+  ping <neighbor-ip> source <local-ip>
+  telnet <neighbor-ip> 179
+
+Transition: IDLE → CONNECT when BGP initiates TCP connection
+
+STATE 2: CONNECT
+----------------
+Description:
+  BGP is waiting for the TCP three-way handshake to complete on port 179.
+
+Common issues:
+  - TCP SYN sent but no SYN-ACK received (firewall blocking)
+  - Wrong source IP for TCP session (use update-source loopback for iBGP)
+  - MTU mismatch causing TCP fragmentation issues
+
+Verification commands:
+  debug ip bgp <neighbor-ip> events
+  show tcp brief
+  show ip interface brief (verify source interface)
+
+Transition: CONNECT → OPENSENT when TCP session established
+
+STATE 3: ACTIVE
+---------------
+Description:
+  TCP connection failed; BGP is actively retrying. The router alternates
+  between CONNECT and ACTIVE states while attempting to establish TCP.
+
+ACTIVE state is one of the most common "stuck" states and indicates:
+  - TCP connectivity problem (most common)
+  - Incorrect neighbor IP address
+  - Missing or wrong update-source configuration for loopback peers
+  - Interface down on one side
+
+Key distinction: ACTIVE means BGP is TRYING but failing at TCP layer.
+
+Verification commands:
+  show bgp neighbors <ip> | include BGP state
+  debug ip tcp transactions
+  show ip route <neighbor-ip>
+
+STATE 4: OPENSENT
+-----------------
+Description:
+  TCP connection established. Local router sent OPEN message and is waiting
+  for the remote router's OPEN message.
+
+OPEN message contains:
+  - BGP version (must be 4 on both sides)
+  - AS number
+  - Hold time
+  - BGP Router ID
+  - Optional capabilities (route refresh, 4-byte ASN, etc.)
+
+Common errors at this stage:
+  - AS number mismatch
+  - BGP version incompatibility (rare, always version 4)
+  - Unsupported capability causing NOTIFICATION
+
+Verification commands:
+  debug ip bgp <neighbor-ip> updates
+  show bgp neighbors <ip>
+
+STATE 5: OPENCONFIRM
+--------------------
+Description:
+  Both OPEN messages exchanged. BGP is waiting for KEEPALIVE to confirm
+  the session. Hold timer negotiation occurs here.
+
+Hold time negotiation: lower value of the two routers wins.
+  Default hold time: 180 seconds
+  Default keepalive interval: 60 seconds (1/3 of hold time)
+
+Common issues:
+  - Hold time mismatch (one side configured with timers bgp 10 30,
+    other side uses default 60 180 — the lower 30 will be selected)
+  - NOTIFICATION sent by remote (check logs)
+
+Verification commands:
+  show bgp neighbors <ip> | include Hold time
+  show bgp neighbors <ip> | include Keepalive
+
+STATE 6: ESTABLISHED
+--------------------
+Description:
+  BGP session is fully up. KEEPALIVE messages exchanged every keepalive
+  interval. UPDATE messages carry routing information.
+
+Monitoring an ESTABLISHED session:
+  show ip bgp summary          — shows prefixes received, uptime, state
+  show bgp neighbors <ip>      — detailed session info
+  show ip bgp                  — full BGP table
+  show ip bgp neighbors <ip> advertised-routes
+  show ip bgp neighbors <ip> received-routes
+
+Session going DOWN from ESTABLISHED indicates:
+  - Hold timer expired (no KEEPALIVE received in hold-time seconds)
+  - NOTIFICATION message received
+  - TCP session reset (interface flap, carrier drop)
+  - BFD failure (if configured)
+  - Peer reset (clear ip bgp executed on remote)
+
+BGP TIMER REFERENCE
+-------------------
+Default keepalive:     60 seconds
+Default hold time:    180 seconds
+Minimum hold time:      0 (hold timer disabled — not recommended)
+ConnectRetry timer:    32 seconds (wait before retrying TCP after failure)
+
+Recommended for fast convergence (data center):
+  timers bgp 3 9
+  (keepalive 3s, hold 9s — aggressive but supported)
+
+BGP ROUTER ID SELECTION
+------------------------
+BGP Router ID is selected in this order:
+  1. Manually configured: bgp router-id <x.x.x.x>
+  2. Highest loopback IP address
+  3. Highest physical interface IP address (if no loopback)
+
+Router ID conflict causes OPEN message rejection.
+Two iBGP peers cannot have same Router ID.

@@ -1,0 +1,187 @@
+BGP TELEMETRY AND SYSLOG DATA — PRODUCTION NETWORK SAMPLES
+============================================================
+Collection period: 30 days
+Network: Enterprise dual-homed AS65001 (iBGP + 2x eBGP upstreams)
+Routers: CORE-RTR-01, CORE-RTR-02, EDGE-RTR-01, EDGE-RTR-02
+
+=============================================================================
+WEEK 1 — NORMAL OPERATIONS + AUTHENTICATION INCIDENT
+=============================================================================
+
+2024-01-02 00:01:15 UTC CORE-RTR-01: %BGP-5-ADJCHANGE: neighbor 10.0.0.2 Up
+2024-01-02 00:01:16 UTC CORE-RTR-01: %BGP-5-ADJCHANGE: neighbor 172.16.0.1 Up
+2024-01-02 00:01:18 UTC EDGE-RTR-01: %BGP-5-ADJCHANGE: neighbor 203.0.113.1 Up
+
+2024-01-02 00:15:30 UTC CORE-RTR-01: %BGP-5-ADJCHANGE: neighbor 10.0.0.2 Down Hold Timer Expired
+2024-01-02 00:15:30 UTC CORE-RTR-01: %BGP-3-NOTIFICATION: sent to neighbor 10.0.0.2 4/0 (hold time expired) 0 bytes
+2024-01-02 00:15:47 UTC CORE-RTR-01: %BGP-5-ADJCHANGE: neighbor 10.0.0.2 Up
+  # Analysis: Brief hold timer expiry — likely high CPU spike. Recovered quickly.
+  # Action taken: Monitored; CPU was at 92% during BGP scanner run.
+
+2024-01-03 09:22:11 UTC EDGE-RTR-01: %TCP-6-BADAUTH: No MD5 digest from 198.51.100.1(179) to 198.51.100.2(49821)
+2024-01-03 09:22:11 UTC EDGE-RTR-01: %TCP-6-BADAUTH: No MD5 digest from 198.51.100.1(179) to 198.51.100.2(49821)
+2024-01-03 09:22:12 UTC EDGE-RTR-01: %TCP-6-BADAUTH: No MD5 digest from 198.51.100.1(179) to 198.51.100.2(49821)
+  # Analysis: ISP-01 (198.51.100.1) not sending MD5 authentication.
+  # Opened ticket with ISP — they had removed auth after maintenance window.
+  # ISP added auth back at 09:45. Session re-established at 09:47.
+
+2024-01-03 09:47:03 UTC EDGE-RTR-01: %BGP-5-ADJCHANGE: neighbor 198.51.100.1 Up
+
+2024-01-04 14:33:22 UTC EDGE-RTR-02: %BGP-5-ADJCHANGE: neighbor 203.0.113.5 Down BGP Notification received
+2024-01-04 14:33:22 UTC EDGE-RTR-02: %BGP-3-NOTIFICATION: received from neighbor 203.0.113.5 2/2 (open error/bad peer AS) 2 bytes
+  # Analysis: ISP-02 (203.0.113.5) sent Open Error — Bad Peer AS.
+  # Investigation: ISP changed our peer configuration to wrong ASN after circuit upgrade.
+  # ISP corrected at 15:10.
+
+2024-01-04 15:10:44 UTC EDGE-RTR-02: %BGP-5-ADJCHANGE: neighbor 203.0.113.5 Up
+
+=============================================================================
+WEEK 2 — HOLD TIMER EXPIRY INCIDENTS (MOST COMMON ISSUE TYPE)
+=============================================================================
+
+# Hold timer expiry accounted for 67% of all BGP resets this month.
+# Primary cause: CPU spikes during BGP table scan (every 60 seconds).
+
+2024-01-08 02:14:55 UTC CORE-RTR-01: %BGP-5-ADJCHANGE: neighbor 10.0.0.2 Down Hold Timer Expired
+2024-01-08 02:14:55 UTC CORE-RTR-01: show processes cpu sorted output:
+  CPU utilization for five seconds: 98%/62%; one minute: 78%; five minutes: 45%
+  PID  Runtime(ms)   Invoked    uSecs    5Sec   1Min   5Min TTY Process
+  170   8234901     291034     28290   72.45% 41.23% 18.12%   0 BGP Scanner
+  045   1923044      82341     23360   14.22%  8.44%  4.21%   0 BGP Router
+  # BGP Scanner consuming 72% CPU — causing keepalive packet drops.
+
+2024-01-08 02:15:22 UTC CORE-RTR-01: %BGP-5-ADJCHANGE: neighbor 10.0.0.2 Up
+
+2024-01-09 03:45:11 UTC CORE-RTR-02: %BGP-5-ADJCHANGE: neighbor 10.0.0.1 Down Hold Timer Expired
+2024-01-09 03:45:34 UTC CORE-RTR-02: %BGP-5-ADJCHANGE: neighbor 10.0.0.1 Up
+  # Same pattern on CORE-RTR-02. Hold timer expiry at 03:45, recovered at 03:45.
+  # Duration: 23 seconds.
+
+2024-01-10 03:44:58 UTC CORE-RTR-01: %BGP-5-ADJCHANGE: neighbor 10.0.0.2 Down Hold Timer Expired
+  # Third consecutive night at ~03:45 UTC. Correlates with nightly backup job.
+  # Backup script was causing 80% CPU spike on management plane.
+  # Resolution: Rescheduled backup to 05:00 UTC. No further occurrences.
+
+2024-01-11 05:00:00 UTC — Backup rescheduled
+2024-01-11 onwards — No Hold Timer Expiry events on CORE-RTR-01/02
+
+=============================================================================
+WEEK 2 — INTERFACE FLAP CAUSING BGP RESET
+=============================================================================
+
+2024-01-09 11:22:33 UTC EDGE-RTR-01: %LINK-3-UPDOWN: Interface GigabitEthernet0/0, changed state to down
+2024-01-09 11:22:33 UTC EDGE-RTR-01: %BGP-5-ADJCHANGE: neighbor 203.0.113.1 Down Interface flap
+2024-01-09 11:22:33 UTC EDGE-RTR-01: %LINK-3-UPDOWN: Interface GigabitEthernet0/0, changed state to up
+2024-01-09 11:22:35 UTC EDGE-RTR-01: %BGP-5-ADJCHANGE: neighbor 203.0.113.1 Up
+  # Physical layer flap on upstream interface. Duration: 2 seconds.
+  # Cause: Fiber patch cable reseated during data center maintenance.
+  # BGP convergence time: 2 seconds (BFD not configured on this link).
+
+2024-01-09 11:22:33 UTC CORE-RTR-01: show ip bgp summary excerpt:
+  Neighbor        V    AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd
+  10.0.0.2        4 65001   45231   45219   982345    0    0 3d14h         145032
+  172.16.0.1      4 65001   12043   12039   982345    0    0 3d14h          45231
+  203.0.113.1     4 65002   89321   89315   982345    0    0 00:00:03       312045
+  198.51.100.1    4 65003   67234   67228   982345    0    0 5d02h          289034
+  # Note 203.0.113.1 shows uptime 00:00:03 — just reestablished after flap.
+
+=============================================================================
+WEEK 3 — PREFIX LIMIT INCIDENT
+=============================================================================
+
+2024-01-15 08:45:22 UTC EDGE-RTR-02: %BGP-4-MAXPFX: No. of prefix received from 203.0.113.5 (267812) reaches 80% of limit 325000
+  # Warning: Prefix count at 80% of limit. ISP-02 prefix count growing.
+
+2024-01-15 08:46:11 UTC EDGE-RTR-02: %BGP-4-MAXPFX: No. of prefix received from 203.0.113.5 (289034) reaches 89% of limit 325000
+
+2024-01-15 08:47:03 UTC EDGE-RTR-02: %BGP-3-MAXPFXEXCEED: No. of prefix received from 203.0.113.5 (332411) exceeds limit 325000
+2024-01-15 08:47:03 UTC EDGE-RTR-02: %BGP-5-ADJCHANGE: neighbor 203.0.113.5 Down MAXPFX exceeded
+  # Session torn down! ISP-02 leaked a full routing table.
+  # Full internet BGP table: ~900K+ routes. Our limit was 325K.
+  # Investigation: ISP-02 suffered route leak from their upstream — all routes redistributed.
+
+2024-01-15 09:15:00 UTC — ISP-02 fixed route leak, prefix count normalized
+2024-01-15 09:15:44 UTC EDGE-RTR-02: clear ip bgp 203.0.113.5 executed
+2024-01-15 09:15:50 UTC EDGE-RTR-02: %BGP-5-ADJCHANGE: neighbor 203.0.113.5 Up
+  # Session reestablished. Lesson: maximum-prefix saved us from memory exhaustion.
+
+=============================================================================
+WEEK 3 — BGP AUTHENTICATION MISMATCH
+=============================================================================
+
+2024-01-16 14:22:45 UTC CORE-RTR-01: %TCP-6-BADAUTH: Invalid MD5 digest from 10.0.0.2(49301) to 10.0.0.1(179)
+2024-01-16 14:22:45 UTC CORE-RTR-01: %TCP-6-BADAUTH: Invalid MD5 digest from 10.0.0.2(49301) to 10.0.0.1(179)
+2024-01-16 14:22:45 UTC CORE-RTR-01: %BGP-5-ADJCHANGE: neighbor 10.0.0.2 Down BGP authentication failure
+  # Invalid MD5 — passwords don't match. CORE-RTR-02 had a password change.
+  # Change management error: password updated on RTR-02 but not RTR-01.
+  # Fix: Updated password on RTR-01 to match.
+
+2024-01-16 14:35:12 UTC CORE-RTR-01: clear ip bgp 10.0.0.2
+2024-01-16 14:35:18 UTC CORE-RTR-01: %BGP-5-ADJCHANGE: neighbor 10.0.0.2 Up
+
+=============================================================================
+WEEK 4 — ROUTE REFLECTOR CLUSTER-ID ISSUE
+=============================================================================
+
+2024-01-22 09:11:22 UTC CORE-RTR-01: %BGP-3-CLUSTER_LIST_LOOP: Cluster list loop detected for prefix 192.168.0.0/16
+2024-01-22 09:11:22 UTC CORE-RTR-01: %BGP-3-CLUSTER_LIST_LOOP: Cluster list loop detected for prefix 192.168.1.0/24
+  # RR loop detection triggered. Missing cluster-id on one of the RRs.
+  # CORE-RTR-02 was acting as RR but had no cluster-id configured.
+  # Without cluster-id, multiple RRs in the same cluster cause duplicate originator loops.
+  # Fix: Added bgp cluster-id 1 to CORE-RTR-02.
+  # Reference: RFC 4456 Section 8
+
+2024-01-22 09:45:00 UTC — cluster-id added to CORE-RTR-02
+2024-01-22 09:45:11 UTC CORE-RTR-01: clear ip bgp * soft
+2024-01-22 09:45:30 UTC — Cluster list loop messages ceased
+
+=============================================================================
+MONTHLY SUMMARY — INCIDENT STATISTICS
+=============================================================================
+
+Total BGP session resets: 23 events over 30 days
+
+Breakdown by cause:
+  Hold Timer Expired:          11 events (47.8%) — MOST COMMON
+  Interface flap:               4 events (17.4%)
+  Authentication mismatch:      3 events (13.0%)
+  Administrative reset (clear): 3 events (13.0%)
+  Peer AS mismatch:             1 event  ( 4.3%)
+  Maximum prefix exceeded:      1 event  ( 4.3%)
+
+Average session downtime by cause:
+  Hold Timer Expired:    28 seconds
+  Interface flap:         8 seconds
+  Authentication issue:  12 minutes (requires manual fix)
+  Peer AS mismatch:      37 minutes (requires ISP coordination)
+  Max prefix exceeded:   28 minutes (requires ISP to fix leak)
+
+Most stable peers (no resets):
+  - 10.0.0.2 CORE-RTR-02 iBGP: 1 reset (timer) + 1 reset (auth mismatch)
+  - 198.51.100.1 ISP-01 eBGP: 1 reset (auth incident)
+
+Most problematic peers:
+  - 203.0.113.5 ISP-02 eBGP: 3 resets (AS mismatch, max-prefix, auth)
+  - 203.0.113.1 ISP-03 eBGP: 4 resets (all interface flap related)
+
+Recommendations from 30-day analysis:
+  1. Increase hold timer from 30s to 90s to reduce false Hold Timer Expiry
+  2. Configure BFD on physical eBGP links for faster failure detection
+  3. Increase max-prefix limit on ISP-02 to 500K with 80% warning threshold
+  4. Schedule backup jobs at 05:00 UTC — CPU impact confirmed during 03:45 UTC slot
+  5. Implement change management procedure for BGP auth password updates (both sides simultaneously)
+  6. Add cluster-id to all Route Reflectors immediately
+
+BGP Table Statistics (end of month):
+  Total prefixes in RIB: 487,231
+  iBGP learned: 45,032
+  eBGP learned (ISP-01): 289,034
+  eBGP learned (ISP-02): 312,045
+  eBGP learned (ISP-03): 145,231
+  Locally originated: 12
+
+Router Memory Usage:
+  CORE-RTR-01: 4.2GB / 8GB (BGP table: 1.8GB)
+  CORE-RTR-02: 4.1GB / 8GB (BGP table: 1.8GB)
+  EDGE-RTR-01: 2.8GB / 8GB (BGP table: 1.2GB)
+  EDGE-RTR-02: 3.1GB / 8GB (BGP table: 1.4GB)

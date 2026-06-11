@@ -1,0 +1,205 @@
+BGP TROUBLESHOOTING GUIDE — SYSTEMATIC METHODOLOGY
+====================================================
+
+GOLDEN RULE: Always start at Layer 3 (IP reachability) before debugging BGP.
+BGP runs over TCP port 179 — if TCP fails, BGP fails.
+
+TROUBLESHOOTING FRAMEWORK
+--------------------------
+Step 1: Verify physical/logical connectivity
+Step 2: Verify IP reachability to BGP peer
+Step 3: Verify BGP configuration matches on both sides
+Step 4: Check BGP state machine and error messages
+Step 5: Verify prefix exchange and routing policies
+
+SECTION 1: BGP SESSION NOT FORMING
+------------------------------------
+
+Symptom: "show ip bgp summary" shows neighbor in ACTIVE or IDLE state
+
+Checklist:
+[ ] Can you ping the neighbor IP from the correct source?
+    ping <neighbor-ip> source <update-source-ip>
+
+[ ] Is TCP 179 reachable?
+    telnet <neighbor-ip> 179
+
+[ ] Is the neighbor statement correct?
+    neighbor <ip> remote-as <asn>
+
+[ ] For iBGP with loopbacks: is update-source configured?
+    neighbor <loopback-ip> update-source Loopback0
+
+[ ] Is there a route to the neighbor in the routing table?
+    show ip route <neighbor-ip>
+
+[ ] Is port 179 blocked?
+    show ip access-lists (check for deny tcp any any eq 179)
+
+[ ] Are both sides using the same MD5 password?
+    neighbor <ip> password <key>
+    — Password mismatch causes TCP session to silently fail
+
+Commands to run:
+  show ip bgp summary
+  show bgp neighbors <ip>
+  debug ip bgp <ip> events (use with caution in production)
+
+
+SECTION 2: BGP SESSION FLAPPING
+---------------------------------
+
+Symptom: BGP neighbor goes up and down repeatedly
+Syslog: %BGP-5-ADJCHANGE: neighbor <ip> Down
+
+Root causes and remediation:
+
+1. HOLD TIMER EXPIRY (most common flapping cause)
+   - Symptoms: "BGP notification sent or received" in logs
+   - Cause: KEEPALIVE messages not arriving within hold-time
+   - Often caused by: high CPU on router, interface congestion,
+     route processor overload
+   - Fix:
+     a) Check CPU: show processes cpu sorted
+     b) Check input queue drops: show interfaces <int> | include drops
+     c) Consider increasing hold timer: timers bgp 60 180
+     d) Consider BFD as alternative failure detection
+
+2. INTERFACE FLAPPING
+   - Verify: show interfaces <int> | include line protocol
+   - Check error counters: show interfaces <int>
+   - Look for CRC errors, input errors indicating physical layer issue
+
+3. ROUTE REFLECTOR / CONFEDERATION ISSUES
+   - Verify RR cluster-id matches across all RR clients
+   - Check for routing loops caused by missing cluster-id
+
+4. MEMORY EXHAUSTION
+   - show processes memory sorted
+   - BGP table too large for available memory
+   - Consider prefix-list filtering: neighbor <ip> prefix-list FILTER in
+
+5. BFD TRIGGERED FAILOVER
+   - show bfd neighbors
+   - BFD more sensitive than BGP hold timer — may trigger false positives
+   - Tune: bfd interval 300 min_rx 300 multiplier 3
+
+
+SECTION 3: ROUTES NOT BEING RECEIVED
+--------------------------------------
+
+Symptom: BGP session is ESTABLISHED but expected prefixes missing
+
+Checklist:
+[ ] Does the remote side have the route to advertise?
+    show ip bgp <prefix> (on remote router)
+
+[ ] Is the route being advertised?
+    show ip bgp neighbors <ip> advertised-routes
+
+[ ] Is an inbound route policy filtering it?
+    show ip bgp neighbors <ip> policy
+    show route-map <name>
+
+[ ] Is the prefix blocked by a prefix-list?
+    show ip prefix-list <name>
+
+[ ] Is soft-reconfiguration enabled (to see received routes)?
+    neighbor <ip> soft-reconfiguration inbound
+    show ip bgp neighbors <ip> received-routes
+
+
+SECTION 4: ROUTES NOT BEING ADVERTISED
+----------------------------------------
+
+Symptom: Local prefixes not appearing in peer's BGP table
+
+Common causes:
+
+1. NETWORK STATEMENT MISSING OR WRONG
+   - network <prefix> mask <mask> must exactly match routing table entry
+   - network 10.0.0.0 mask 255.255.0.0 will only work if 10.0.0.0/16
+     exists exactly in the routing table (not just a subnet of it)
+
+2. REDISTRIBUTE NOT CONFIGURED
+   - If redistributing from OSPF/EIGRP:
+     redistribute ospf 1 metric 100 route-map EXPORT
+
+3. NEXT-HOP NOT REACHABLE
+   - iBGP: next-hop-self required when advertising eBGP-learned routes to iBGP
+   - neighbor <ip> next-hop-self
+
+4. OUTBOUND ROUTE POLICY BLOCKING
+   - show bgp neighbors <ip> policy
+   - show route-map <name> (check for deny statements)
+
+5. MAXIMUM-PREFIX LIMIT HIT
+   - neighbor <ip> maximum-prefix <number> [threshold] [warning-only]
+   - show ip bgp neighbors <ip> | include prefix
+
+
+SECTION 5: BGP PATH SELECTION ISSUES
+--------------------------------------
+
+When multiple paths exist, BGP selects best path using this ordered criteria:
+
+1.  Highest WEIGHT (Cisco proprietary, local to router)
+2.  Highest LOCAL_PREFERENCE (within AS, default 100)
+3.  Locally originated (network/redistribute > iBGP learned)
+4.  Shortest AS_PATH length
+5.  Lowest ORIGIN (IGP < EGP < incomplete)
+6.  Lowest MED (when paths come from same neighboring AS)
+7.  eBGP path over iBGP path
+8.  Lowest IGP metric to BGP next-hop
+9.  Oldest eBGP path (most stable)
+10. Lowest BGP Router ID
+11. Lowest neighbor IP address
+
+Debug path selection:
+  show ip bgp <prefix>         — shows all paths, best marked with >
+  show ip bgp <prefix> detail  — full attribute dump
+
+
+SECTION 6: AUTHENTICATION FAILURES
+-------------------------------------
+
+BGP MD5 authentication:
+  neighbor <ip> password <key>
+
+Symptoms of mismatch:
+  - TCP session never establishes (stays in ACTIVE)
+  - Syslog: %TCP-6-BADAUTH: No MD5 digest from <ip>
+  - Syslog: %TCP-6-BADAUTH: Invalid MD5 digest from <ip>
+
+Verification:
+  show bgp neighbors <ip> | include password
+  (will show "MD5 is configured" but NOT the password itself)
+
+Common mistakes:
+  - Trailing space in password string
+  - Case sensitivity error
+  - One side has password, other does not
+  - Password configured but TCP session pre-dates authentication config
+    (requires session reset: clear ip bgp <ip> soft)
+
+
+SECTION 7: HIGH CPU FROM BGP
+------------------------------
+
+Symptoms: Router sluggish, BGP sessions flapping, high CPU
+
+Commands:
+  show processes cpu sorted | head 20
+  show bgp process detail (XE/XR)
+
+Common causes:
+  1. Full internet BGP table (800k+ routes) — normal during convergence
+  2. Route policy with complex regex (avoid regex in large deployments)
+  3. Peer sending malformed updates (check: show ip bgp neighbors <ip> | include notifications)
+  4. BGP scanner running (every 60s, unavoidable but brief)
+  5. Soft reset in progress: clear ip bgp <ip> soft in
+
+Mitigation:
+  - Prefix filtering: only accept needed prefixes
+  - Outbound route filtering (ORF)
+  - BGP route dampening (use carefully — deprecated in some designs)

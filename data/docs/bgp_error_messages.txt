@@ -1,0 +1,223 @@
+BGP ERROR MESSAGES AND SYSLOG REFERENCE — CISCO IOS
+=====================================================
+
+This guide covers the most common BGP syslog messages, their meaning,
+severity levels, and recommended remediation steps.
+
+FORMAT: %FACILITY-SEVERITY-MNEMONIC: description
+Severity: 0=Emergency, 1=Alert, 2=Critical, 3=Error, 4=Warning, 5=Notice, 6=Info, 7=Debug
+
+=============================================================================
+SESSION STATE CHANGE MESSAGES
+=============================================================================
+
+%BGP-5-ADJCHANGE: neighbor <ip> Down <reason>
+Severity: 5 (Notice)
+Meaning: BGP adjacency has gone down.
+The <reason> field is critical — common values:
+
+  "Hold Timer Expired"
+  → No KEEPALIVE received within hold-time seconds
+  → Check: CPU utilization on both routers (show processes cpu)
+  → Check: Interface drops (show interfaces | include drops)
+  → Check: Routing to peer (ping with source IP)
+  → Fix: May need to increase hold timer (timers bgp 60 180)
+
+  "BGP Notification sent"
+  → Local router sent a NOTIFICATION (error) to peer
+  → Follow-up: check logs for %BGP-3-NOTIFICATION line
+  → That will identify the specific error code
+
+  "BGP Notification received"
+  → Remote peer sent a NOTIFICATION to us
+  → Follow-up: check logs for the NOTIFICATION code
+  → May indicate our UPDATE was malformed
+
+  "Peer closed the session"
+  → Remote router closed TCP connection cleanly
+  → May be deliberate (peer reset the session) or process restart
+
+  "Interface flap"
+  → Underlying interface went down, pulling BGP TCP session with it
+  → Check: show interfaces <int> for line protocol changes
+  → Consider BFD for faster failure detection
+
+  "Reset requested by peer"
+  → Remote operator ran: clear ip bgp <ip>
+  → Normal operational event
+
+  "Neighbor deleted"
+  → BGP neighbor statement removed from configuration
+
+%BGP-5-ADJCHANGE: neighbor <ip> Up
+Severity: 5 (Notice)
+Meaning: BGP adjacency established. Normal operational message.
+Log this to verify expected peering.
+
+=============================================================================
+NOTIFICATION MESSAGES
+=============================================================================
+
+%BGP-3-NOTIFICATION: sent to neighbor <ip> <error-code>/<sub-code> (<reason>) <data>
+%BGP-3-NOTIFICATION: received from neighbor <ip> <error-code>/<sub-code> (<reason>) <data>
+Severity: 3 (Error)
+Meaning: BGP NOTIFICATION message sent/received — session will reset.
+
+Error Code 1 — Message Header Error
+  Subcode 1: Connection Not Synchronized
+  Subcode 2: Bad Message Length
+  Subcode 3: Bad Message Type
+  → Usually indicates implementation bug or packet corruption
+  → Check for MTU mismatches causing BGP message truncation
+
+Error Code 2 — OPEN Message Error
+  Subcode 1: Unsupported Version Number
+  → One side is not running BGP4 (extremely rare)
+
+  Subcode 2: Bad Peer AS
+  → neighbor remote-as configured incorrectly on one side
+  → Verify ASNs match on both routers: show bgp neighbors | include remote AS
+
+  Subcode 3: Bad BGP Identifier
+  → Router ID conflict (same Router ID on both peers)
+  → Fix: bgp router-id <unique-id> on one router
+
+  Subcode 4: Unsupported Optional Parameter
+  → Capability mismatch (rare on modern IOS)
+
+  Subcode 5: Authentication Failure
+  → MD5 password mismatch
+  → Also look for: %TCP-6-BADAUTH messages
+
+  Subcode 6: Unacceptable Hold Time
+  → Hold time < 3 seconds (RFC requirement)
+  → Check: timers bgp configuration on both sides
+
+Error Code 3 — UPDATE Message Error
+  Subcode 1: Malformed Attribute List
+  Subcode 2: Unrecognized Well-known Attribute
+  Subcode 3: Missing Well-known Attribute
+  Subcode 4: Attribute Flags Error
+  Subcode 5: Attribute Length Error
+  Subcode 6: Invalid ORIGIN Attribute
+  Subcode 8: Invalid NEXT_HOP Attribute
+  → These indicate a routing protocol implementation bug
+  → Collect: debug ip bgp <ip> updates, capture the problematic UPDATE
+  → May need to contact Cisco TAC with packet capture
+
+Error Code 4 — Hold Timer Expired
+  → Same as "Hold Timer Expired" reason in ADJCHANGE
+  → Session reset because no KEEPALIVE within hold-time
+
+Error Code 5 — Finite State Machine Error
+  → BGP received unexpected event for current state
+  → Often indicates a software bug or packet corruption
+
+Error Code 6 — Cease
+  Subcode 1: Maximum Number of Prefixes Reached
+  → Peer exceeded maximum-prefix limit
+  → Fix: Increase limit or fix routing policy on peer
+
+  Subcode 2: Administrative Shutdown
+  → Peer ran: neighbor <ip> shutdown
+  → Normal operational event
+
+  Subcode 3: Peer De-configured
+  → Neighbor statement removed on remote side
+
+  Subcode 4: Administrative Reset
+  → Peer ran: clear ip bgp <ip>
+
+  Subcode 7: Connection Collision Resolution
+  → Both routers initiated TCP connection simultaneously
+  → One session kept, one dropped. Normal behavior.
+
+=============================================================================
+AUTHENTICATION MESSAGES
+=============================================================================
+
+%TCP-6-BADAUTH: No MD5 digest from <ip>(<port>) to <ip>(<port>)
+Meaning: We expect MD5 authentication but peer is NOT sending it.
+Fix: Add authentication on the peer: neighbor <local-ip> password <key>
+
+%TCP-6-BADAUTH: Invalid MD5 digest from <ip>(<port>) to <ip>(<port>)
+Meaning: Both sides are using MD5 but the passwords do NOT match.
+Fix: Verify identical passwords. Check for:
+  - Trailing whitespace in password
+  - Case sensitivity errors
+  - Type-0 vs Type-7 password confusion in config
+
+=============================================================================
+PREFIX LIMIT MESSAGES
+=============================================================================
+
+%BGP-3-MAXPFXEXCEED: No. of prefix received from <ip> (<count>) exceeds limit <limit>
+Severity: 3 (Error)
+Meaning: Peer sent more prefixes than maximum-prefix allows.
+Action depends on configuration:
+  - Default: session torn down with NOTIFICATION (Cease/Max-Prefix)
+  - With warning-only: session stays up, alert generated
+  - With threshold: warning at percentage of limit
+
+Fix:
+  a) Investigate why peer is sending unexpected volume
+  b) Adjust limit: neighbor <ip> maximum-prefix <new-limit>
+  c) Reset session: clear ip bgp <ip>
+
+%BGP-4-MAXPFX: No. of prefix received from <ip> (<count>) reaches <threshold>%
+Severity: 4 (Warning)
+Meaning: Prefix count approaching limit — warning only, session intact.
+Action: Monitor; consider adjusting limit or investigating route growth.
+
+=============================================================================
+ROUTE FLAP / DAMPENING MESSAGES
+=============================================================================
+
+%BGP-6-ASPATH: Long AS path <path> received — truncated
+Severity: 6 (Informational)
+Meaning: Received an AS_PATH exceeding 255 ASNs (virtually impossible in real networks).
+Typically indicates a routing loop or AS_PATH prepending misconfiguration.
+
+%BGP-5-DAMP: Prefix <prefix> now suppressed, penalty <n>
+Meaning: Route flap dampening suppressed this prefix.
+Fix: Either wait for suppression to lift (show ip bgp dampened-paths)
+     or clear: clear ip bgp dampening <prefix>
+
+=============================================================================
+MEMORY AND RESOURCE MESSAGES
+=============================================================================
+
+%BGP-4-MEMNOMEM: No memory available for <resource>
+Severity: 4 (Warning)
+Meaning: Router running low on memory for BGP operations.
+Immediate actions:
+  1. show processes memory sorted — identify memory consumers
+  2. show ip bgp summary — how many routes/peers?
+  3. Consider prefix filtering to reduce table size
+  4. May require hardware upgrade if persistent
+
+%SYS-2-MALLOCFAIL: Memory allocation of <n> bytes failed from <location>
+Severity: 2 (Critical)
+Meaning: System-wide memory exhaustion. BGP will likely flap.
+Action: Emergency — contact NOC, consider graceful shutdown of non-critical BGP peers.
+
+=============================================================================
+QUICK REFERENCE: MOST COMMON MESSAGES
+=============================================================================
+
+Most frequently seen in production:
+
+1. %BGP-5-ADJCHANGE: neighbor x.x.x.x Down Hold Timer Expired
+   → Check CPU, interface drops, routing path to peer
+
+2. %BGP-5-ADJCHANGE: neighbor x.x.x.x Down BGP Notification sent
+   → Find the matching NOTIFICATION message for error details
+
+3. %TCP-6-BADAUTH: Invalid MD5 digest
+   → Password mismatch — verify both sides
+
+4. %BGP-3-NOTIFICATION: Error Code 2 / Subcode 2 (Bad Peer AS)
+   → AS number mismatch in neighbor configuration
+
+5. %BGP-3-MAXPFXEXCEED
+   → Prefix limit hit — peer sending unexpected volume of routes
